@@ -20,7 +20,17 @@ mod win_util;
 mod worker;
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn")).init();
+    let mut logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn"));
+    // Windows (GUI sem console): log em %APPDATA%\lan-keyboard\log.txt
+    #[cfg(windows)]
+    {
+        let path = config::Config::path().with_file_name("log.txt");
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        if let Ok(f) = std::fs::File::create(&path) {
+            logger.target(env_logger::Target::Pipe(Box::new(f)));
+        }
+    }
+    logger.init();
     let cfg = config::Config::load();
     if std::env::args().any(|a| a == "--headless") {
         if let Err(e) = worker::run_headless(cfg) {

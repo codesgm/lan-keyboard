@@ -132,7 +132,7 @@ fn handle(msg: Msg, st: &mut State, cfg: &Config, inj: &mut dyn Injector) -> Opt
             inj.warp_to_edge(edge, pos);
         }
         Msg::ReleaseAll => st.release_all(inj),
-        _ if !st.active => {}
+        _ if !st.active => log::debug!("ignorado (inativo): {msg:?}"),
         Msg::MouseMove { dx, dy } => {
             let fx = dx * cfg.sensitivity + st.rem.0;
             let fy = dy * cfg.sensitivity + st.rem.1;
@@ -160,6 +160,7 @@ fn handle(msg: Msg, st: &mut State, cfg: &Config, inj: &mut dyn Injector) -> Opt
             inj.scroll(ix as i32, iy as i32);
         }
         Msg::Key { hid, down } => {
+            log::debug!("tecla hid={hid:#04x} down={down}");
             if down {
                 st.keys.insert(hid);
             } else {

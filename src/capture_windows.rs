@@ -232,8 +232,12 @@ fn handle_key(msg: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
         let base = (kb.scanCode & 0xFF) as u16;
         if kb.flags.contains(LLKHF_EXTENDED) && base != 0x36 { 0xE000 | base } else { base }
     };
-    if let Some(hid) = keymap::win_scancode_to_hid(sc) {
-        let _ = st.tx.send(CapEvent::Input(Msg::Key { hid, down }));
+    match keymap::win_scancode_to_hid(sc) {
+        Some(hid) => {
+            log::debug!("tecla vk={:#x} sc={sc:#x} -> hid={hid:#x} down={down}", kb.vkCode);
+            let _ = st.tx.send(CapEvent::Input(Msg::Key { hid, down }));
+        }
+        None => log::warn!("tecla sem mapa: vk={:#x} sc={:#x} flags={:#x}", kb.vkCode, kb.scanCode, kb.flags.0),
     }
     true
 }

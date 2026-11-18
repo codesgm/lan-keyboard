@@ -160,8 +160,13 @@ impl Injector for LinuxInjector {
     }
 
     fn key(&mut self, hid: u16, down: bool) {
-        if let Some(code) = keymap::hid_to_evdev(hid) {
-            let _ = self.kbd.emit(&[InputEvent::new(EventType::KEY.0, code, down as i32)]);
+        match keymap::hid_to_evdev(hid) {
+            Some(code) => {
+                if let Err(e) = self.kbd.emit(&[InputEvent::new(EventType::KEY.0, code, down as i32)]) {
+                    log::warn!("uinput tecla {code}: {e}");
+                }
+            }
+            None => log::warn!("hid {hid:#04x} sem evdev"),
         }
     }
 }
