@@ -118,6 +118,8 @@ async fn session(cfg: &Config, shared: &Shared, inj: &mut dyn Injector) -> anyho
         scroll_rem: (0.0, 0.0),
     };
     let mut hb = tokio::time::interval(Duration::from_secs(1));
+    let awake = crate::awake::Awake::start();
+    let mut awake_tick = tokio::time::interval(crate::awake::REPORT_EVERY);
     let res = loop {
         tokio::select! {
             msg = tokio::time::timeout(Duration::from_secs(4), opener.read(&mut reader)) => {
@@ -126,8 +128,21 @@ async fn session(cfg: &Config, shared: &Shared, inj: &mut dyn Injector) -> anyho
                     Ok(Err(e)) => break Err(e),
                     Err(_) => break Err(anyhow::anyhow!("servidor sem heartbeat")),
                 };
+                if msg == Msg::Awake {
+                    if cfg.keep_awake {
+                        awake.poke();
+                    }
+                    continue;
+                }
                 if let Some(out) = handle(msg, &mut st, cfg, inj) {
                     if let Err(e) = writer.write_all(&sealer.seal(&out)?).await {
+                        break Err(e.into());
+                    }
+                }
+            }
+            _ = awake_tick.tick() => {
+                if cfg.keep_awake && awake.user_active() {
+                    if let Err(e) = writer.write_all(&sealer.seal(&Msg::Awake)?).await {
                         break Err(e.into());
                     }
                 }
@@ -188,7 +203,7 @@ fn handle(msg: Msg, st: &mut State, cfg: &Config, inj: &mut dyn Injector) -> Opt
             }
             inj.key(hid, down);
         }
-        Msg::Hello { .. } | Msg::Leave { .. } | Msg::Heartbeat => {}
+        Msg::Hello { .. } | Msg::Leave { .. } | Msg::Heartbeat | Msg::Awake => {}
     }
     None
 }

@@ -4,6 +4,7 @@
 mod capture_linux;
 #[cfg(windows)]
 mod capture_windows;
+mod awake;
 mod client;
 mod config;
 mod gui;

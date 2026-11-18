@@ -151,6 +151,8 @@ pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
     // Some(along na entrada) = captura ativa e cliente controlando.
     let mut captured: Option<f32> = None;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    let awake = crate::awake::Awake::start();
+    let mut awake_tick = tokio::time::interval(crate::awake::REPORT_EVERY);
     let limiter = Arc::new(Mutex::new(Limiter::default()));
     let hello = Msg::Hello { version: PROTOCOL_VERSION, host: hostname(), screen: (desktop.w as u32, desktop.h as u32) };
     let release = |along: f32| {
@@ -190,6 +192,11 @@ pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
                     log::info!("cliente saiu pela borda em {pos}");
                     if captured.take().is_some() {
                         release(layout(client.as_ref().unwrap()).remote_to_local(pos));
+                    }
+                }
+                ClientEvent::Msg { id, msg: Msg::Awake } if client.as_ref().is_some_and(|c| c.id == id) => {
+                    if cfg.keep_awake {
+                        awake.poke();
                     }
                 }
                 ClientEvent::Gone { id } if client.as_ref().is_some_and(|c| c.id == id) => {
@@ -238,6 +245,13 @@ pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
             _ = heartbeat.tick() => {
                 if let Some(c) = client.as_mut() {
                     let _ = c.send(&Msg::Heartbeat).await;
+                }
+            }
+            _ = awake_tick.tick() => {
+                if let Some(c) = client.as_mut() {
+                    if cfg.keep_awake && awake.user_active() {
+                        let _ = c.send(&Msg::Awake).await;
+                    }
                 }
             }
         }

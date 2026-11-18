@@ -89,6 +89,9 @@ impl App {
             ui.label("Velocidade do scroll (cliente):");
             ui.add(egui::Slider::new(&mut self.cfg.scroll_speed, 0.25..=3.0).suffix("x"));
             ui.end_row();
+            ui.label("Manter o outro PC acordado:");
+            ui.checkbox(&mut self.cfg.keep_awake, "evita bloqueio/descanso enquanto uso este");
+            ui.end_row();
             ui.label("Resolução local:");
             ui.horizontal(|ui| {
                 ui.add(egui::DragValue::new(&mut self.cfg.local_size.0).range(320..=16384));

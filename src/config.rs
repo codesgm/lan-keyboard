@@ -42,6 +42,8 @@ pub struct Config {
     pub sensitivity: f32,
     /// Multiplicador de scroll aplicado no cliente.
     pub scroll_speed: f32,
+    /// Impede o outro PC de bloquear/suspender enquanto este é usado.
+    pub keep_awake: bool,
     /// PIN compartilhado (igual nos dois PCs).
     pub pin: String,
     /// Resolução local (detectada ou manual).
@@ -61,6 +63,7 @@ impl Default for Config {
             sensitivity: 1.0,
             scroll_speed: 1.0,
             pin: crate::secure::random_pin(),
+            keep_awake: true,
             local_size: (1920, 1080),
             remote_size: (1920, 1080),
         }

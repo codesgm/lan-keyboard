@@ -1,7 +1,7 @@
 use crate::config::Side;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Button {
@@ -29,4 +29,6 @@ pub enum Msg {
     /// Solta tudo e para de injetar (atalho de emergência / perda de foco).
     ReleaseAll,
     Heartbeat,
+    /// Usuário ativo deste lado: o outro PC não deve entrar em descanso/bloqueio.
+    Awake,
 }
