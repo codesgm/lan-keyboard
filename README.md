@@ -20,21 +20,26 @@ Um teclado e um mouse para dois PCs na mesma rede (Ubuntu e Windows). Leve o cur
 | Ubuntu | GNOME 46+ em Wayland (Ubuntu 24.04+). A captura usa o portal InputCapture do GNOME. |
 | Windows | Windows 10 ou 11. |
 
+## Download
+
+Baixe a versão mais recente em [Releases](https://github.com/codesgm/lan-keyboard/releases/latest):
+
+- **Windows:** [lan-keyboard-windows-x64.exe](https://github.com/codesgm/lan-keyboard/releases/latest/download/lan-keyboard-windows-x64.exe)
+- **Ubuntu:** [lan-keyboard-linux-x64](https://github.com/codesgm/lan-keyboard/releases/latest/download/lan-keyboard-linux-x64)
+
 ## Instalação
 
 ### Windows
 
-Baixe o `.exe` em **Actions** → run mais recente → **Artifacts** → `lan-keyboard-windows`. Não precisa instalar nada.
+Baixe o `.exe` (link acima) e execute. Não precisa instalar nada. O Windows SmartScreen pode avisar que o app não é reconhecido, porque o executável não é assinado: clique em **Mais informações** → **Executar assim mesmo**.
 
 Na primeira execução, o Firewall do Windows pergunta se libera o programa. Clique em **Permitir** para rede privada.
 
 ### Ubuntu
 
-1. Instale as dependências e o Rust:
+1. Baixe o binário (link acima) e torne-o executável:
    ```bash
-   sudo apt install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-     libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libudev-dev
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   chmod +x ~/Downloads/lan-keyboard-linux-x64
    ```
 2. Dê acesso ao `/dev/uinput`. É necessário para o Ubuntu funcionar como cliente:
    ```bash
@@ -47,9 +52,9 @@ Na primeira execução, o Firewall do Windows pergunta se libera o programa. Cli
    ```bash
    sudo ufw allow 24800/tcp
    ```
-4. Compile e rode:
+4. Rode:
    ```bash
-   cargo run --release
+   ~/Downloads/lan-keyboard-linux-x64
    ```
 
 ## Uso
@@ -92,13 +97,24 @@ Usa a config salva. Útil para iniciar junto com o sistema.
 
 | Sintoma | Solução |
 |---|---|
-| `sem acesso a /dev/uinput` | Faça a etapa 2 da instalação do Ubuntu. Como alternativa temporária, rode com `sg input -c "cargo run"`. |
+| `sem acesso a /dev/uinput` | Faça a etapa 2 da instalação do Ubuntu. |
 | `PIN incorreto` | Copie o PIN do servidor para o cliente, clique em **Salvar** e depois em **Iniciar**. |
 | Cliente fica em "Conectando…" | Confira o IP e a porta. Confira também o firewall do servidor (ufw no Ubuntu; no Windows, permita o programa). |
 | Mouse ou teclado travado no outro PC | Aperte `Ctrl+Alt+Pause`. |
 | Teclas não chegam | Rode com `RUST_LOG=lan_keyboard=debug` e veja o log. No Windows, o log fica em `%APPDATA%\lan-keyboard\log.txt`. Atenção: com `debug` ligado, o log grava as teclas digitadas. Apague o arquivo depois. |
 
 ## Desenvolvimento
+
+Para compilar no Ubuntu:
+
+```bash
+sudo apt install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
+  libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libudev-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo run --release
+```
+
+Para publicar uma versão nova: `git tag v0.2.0 && git push origin v0.2.0`. O GitHub Actions compila e anexa os binários na release.
 
 ```bash
 cargo test
