@@ -13,6 +13,7 @@ mod inject_linux;
 mod inject_windows;
 mod keymap;
 mod protocol;
+mod secure;
 mod server;
 mod switch;
 #[cfg(windows)]

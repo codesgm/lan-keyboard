@@ -2,11 +2,14 @@
 //! (`capture_linux` / `capture_windows`) via canais.
 
 use crate::config::{Config, Side};
-use crate::protocol::{self, Msg, PROTOCOL_VERSION};
+use crate::protocol::{Msg, PROTOCOL_VERSION};
+use crate::secure::{self, Sealer};
 use crate::switch::Layout;
 use crate::worker::Shared;
 use anyhow::Context as _;
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
@@ -87,7 +90,7 @@ async fn start_capture(side: Side) -> anyhow::Result<CaptureHandle> {
 }
 
 enum ClientEvent {
-    Connected { id: u64, writer: OwnedWriteHalf, screen: (u32, u32), host: String },
+    Connected { id: u64, writer: OwnedWriteHalf, sealer: Sealer, screen: (u32, u32), host: String },
     Msg { id: u64, msg: Msg },
     Gone { id: u64 },
 }
@@ -95,17 +98,44 @@ enum ClientEvent {
 struct Client {
     id: u64,
     writer: OwnedWriteHalf,
+    sealer: Sealer,
     screen: (u32, u32),
 }
 
 impl Client {
     async fn send(&mut self, msg: &Msg) -> anyhow::Result<()> {
-        self.writer.write_all(&protocol::encode(msg)?).await?;
+        let frame = self.sealer.seal(msg)?;
+        self.writer.write_all(&frame).await?;
         Ok(())
     }
 }
 
+/// Anti força bruta: máx. 5 handshakes falhos por minuto.
+#[derive(Default)]
+struct Limiter {
+    fails: VecDeque<Instant>,
+}
+
+const MAX_FAILS: usize = 5;
+const FAIL_WINDOW: Duration = Duration::from_secs(60);
+
+impl Limiter {
+    fn prune(&mut self) {
+        while self.fails.front().is_some_and(|t| t.elapsed() > FAIL_WINDOW) {
+            self.fails.pop_front();
+        }
+    }
+    fn blocked(&mut self) -> bool {
+        self.prune();
+        self.fails.len() >= MAX_FAILS
+    }
+    fn fail(&mut self) {
+        self.fails.push_back(Instant::now());
+    }
+}
+
 pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
+    secure::check_pin(&cfg.pin)?;
     let listener = TcpListener::bind(("0.0.0.0", cfg.port))
         .await
         .with_context(|| format!("porta {} ocupada?", cfg.port))?;
@@ -121,6 +151,8 @@ pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
     // Some(along na entrada) = captura ativa e cliente controlando.
     let mut captured: Option<f32> = None;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    let limiter = Arc::new(Mutex::new(Limiter::default()));
+    let hello = Msg::Hello { version: PROTOCOL_VERSION, host: hostname(), screen: (desktop.w as u32, desktop.h as u32) };
     let release = |along: f32| {
         let _ = cmds.send(CapCmd::Release { along });
     };
@@ -136,22 +168,23 @@ pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
         tokio::select! {
             acc = listener.accept() => {
                 let (sock, addr) = acc?;
+                if limiter.lock().unwrap().blocked() {
+                    log::warn!("recusando {addr}: muitas tentativas de PIN erradas, aguarde 1 min");
+                    shared.status("Muitas tentativas de PIN erradas. Bloqueado por 1 min.");
+                    continue;
+                }
                 next_id += 1;
                 log::info!("conexão de {addr}");
-                tokio::spawn(handle_client(next_id, sock, ctx_tx.clone()));
+                tokio::spawn(handle_client(next_id, sock, ctx_tx.clone(), cfg.pin.clone(), hello.clone(), limiter.clone()));
             }
             Some(ev) = ctx_rx.recv() => match ev {
-                ClientEvent::Connected { id, writer, screen, host } => {
+                ClientEvent::Connected { id, writer, sealer, screen, host } => {
                     if let Some(along) = captured.take() {
                         release(along);
                     }
-                    let mut c = Client { id, writer, screen };
-                    let hello = Msg::Hello { version: PROTOCOL_VERSION, host: hostname(), screen: (desktop.w as u32, desktop.h as u32) };
-                    if c.send(&hello).await.is_ok() {
-                        shared.update(|s| s.remote_size = Some(screen));
-                        shared.status(format!("Conectado: {host} ({}x{})", screen.0, screen.1));
-                        client = Some(c);
-                    }
+                    shared.update(|s| s.remote_size = Some(screen));
+                    shared.status(format!("Conectado: {host} ({}x{})", screen.0, screen.1));
+                    client = Some(Client { id, writer, sealer, screen });
                 }
                 ClientEvent::Msg { id, msg: Msg::Leave { pos, .. } } if client.as_ref().is_some_and(|c| c.id == id) => {
                     log::info!("cliente saiu pela borda em {pos}");
@@ -211,22 +244,45 @@ pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
     }
 }
 
-async fn handle_client(id: u64, sock: TcpStream, tx: mpsc::Sender<ClientEvent>) {
+async fn handle_client(
+    id: u64,
+    sock: TcpStream,
+    tx: mpsc::Sender<ClientEvent>,
+    pin: String,
+    hello: Msg,
+    limiter: Arc<Mutex<Limiter>>,
+) {
     let _ = sock.set_nodelay(true);
-    let (mut reader, writer) = sock.into_split();
-    let hello = tokio::time::timeout(Duration::from_secs(5), protocol::read_msg(&mut reader)).await;
-    let (host, screen) = match hello {
-        Ok(Ok(Msg::Hello { version, host, screen })) if version == PROTOCOL_VERSION => (host, screen),
-        other => {
-            log::warn!("handshake inválido: {other:?}");
+    let (mut reader, mut writer) = sock.into_split();
+    // Handshake + Hellos em até 5s; qualquer falha conta como tentativa de PIN.
+    let auth = async {
+        let (mut sealer, mut opener) = secure::handshake(&mut reader, &mut writer, &pin, true).await?;
+        let frame = sealer.seal(&hello)?;
+        writer.write_all(&frame).await?;
+        match opener.read(&mut reader).await? {
+            Msg::Hello { version, host, screen } if version == PROTOCOL_VERSION => Ok((sealer, opener, host, screen)),
+            Msg::Hello { version, .. } => anyhow::bail!("versão do cliente {version} ≠ {PROTOCOL_VERSION}"),
+            other => anyhow::bail!("esperava Hello, veio {other:?}"),
+        }
+    };
+    let (sealer, mut opener, host, screen) = match tokio::time::timeout(Duration::from_secs(5), auth).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            log::warn!("cliente {id} recusado: {e:#}");
+            limiter.lock().unwrap().fail();
+            return;
+        }
+        Err(_) => {
+            log::warn!("cliente {id} recusado: timeout no handshake");
+            limiter.lock().unwrap().fail();
             return;
         }
     };
-    if tx.send(ClientEvent::Connected { id, writer, screen, host }).await.is_err() {
+    if tx.send(ClientEvent::Connected { id, writer, sealer, screen, host }).await.is_err() {
         return;
     }
     loop {
-        match tokio::time::timeout(Duration::from_secs(4), protocol::read_msg(&mut reader)).await {
+        match tokio::time::timeout(Duration::from_secs(4), opener.read(&mut reader)).await {
             Ok(Ok(msg)) => {
                 if tx.send(ClientEvent::Msg { id, msg }).await.is_err() {
                     return;
@@ -292,6 +348,17 @@ mod tests {
     fn bbox_two_monitors() {
         let d = Desktop::bounding_box([(0, 0, 1920, 1080), (1920, -200, 2560, 1440)].into_iter()).unwrap();
         assert_eq!(d, Desktop { x: 0, y: -200, w: 4480, h: 1440 });
+    }
+
+    #[test]
+    fn limiter_blocks_after_fails() {
+        let mut l = Limiter::default();
+        for _ in 0..MAX_FAILS - 1 {
+            l.fail();
+        }
+        assert!(!l.blocked());
+        l.fail();
+        assert!(l.blocked());
     }
 
     #[test]

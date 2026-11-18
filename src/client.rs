@@ -1,7 +1,8 @@
 //! Cliente: conecta no servidor, recebe eventos e injeta. Reconecta sozinho.
 
 use crate::config::{Config, Side};
-use crate::protocol::{self, Button, Msg, PROTOCOL_VERSION};
+use crate::protocol::{Button, Msg, PROTOCOL_VERSION};
+use crate::secure::{self, AuthError};
 use crate::worker::Shared;
 use anyhow::Context as _;
 use std::collections::HashSet;
@@ -36,11 +37,16 @@ fn new_injector(cfg: &Config) -> anyhow::Result<Box<dyn Injector>> {
 }
 
 pub async fn run(cfg: Config, shared: Shared) -> anyhow::Result<()> {
+    secure::check_pin(&cfg.pin)?;
     let mut inj = new_injector(&cfg)?;
     loop {
         shared.status(format!("Conectando em {}:{}…", cfg.server_addr, cfg.port));
         match session(&cfg, &shared, inj.as_mut()).await {
             Ok(()) => {}
+            // PIN errado não melhora tentando de novo (e gasta tentativas do servidor).
+            Err(e) if e.downcast_ref::<AuthError>().is_some() => {
+                anyhow::bail!("PIN incorreto: confira o PIN do servidor")
+            }
             Err(e) => shared.status(format!("Desconectado: {e:#}. Tentando de novo em 2s…")),
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -77,17 +83,31 @@ async fn session(cfg: &Config, shared: &Shared, inj: &mut dyn Injector) -> anyho
         .context("falha ao conectar")?;
     sock.set_nodelay(true)?;
     let (mut reader, mut writer) = sock.into_split();
-    let screen = inj.screen();
-    let hello = Msg::Hello { version: PROTOCOL_VERSION, host: crate::server::hostname(), screen };
-    writer.write_all(&protocol::encode(&hello)?).await?;
+    let (mut sealer, mut opener) = tokio::time::timeout(
+        Duration::from_secs(5),
+        secure::handshake(&mut reader, &mut writer, &cfg.pin, false),
+    )
+    .await
+    .context("timeout no handshake")??;
 
-    match tokio::time::timeout(Duration::from_secs(5), protocol::read_msg(&mut reader)).await?? {
-        Msg::Hello { version, host, .. } => {
+    // Servidor manda Hello primeiro; se não decifra, o PIN está errado.
+    let first = tokio::time::timeout(Duration::from_secs(5), opener.read(&mut reader))
+        .await
+        .context("timeout")?;
+    match first {
+        Ok(Msg::Hello { version, host, .. }) => {
             anyhow::ensure!(version == PROTOCOL_VERSION, "versão do servidor {version} ≠ {PROTOCOL_VERSION}");
             shared.status(format!("Conectado a {host}"));
         }
-        other => anyhow::bail!("esperava Hello, veio {other:?}"),
+        Ok(other) => anyhow::bail!("esperava Hello, veio {other:?}"),
+        // Servidor fechou antes do Hello = recusou (bloqueio por tentativas).
+        Err(e) if e.downcast_ref::<std::io::Error>().is_some() => {
+            anyhow::bail!("servidor recusou a conexão (bloqueado por tentativas?): {e}")
+        }
+        Err(e) => return Err(e),
     }
+    let hello = Msg::Hello { version: PROTOCOL_VERSION, host: crate::server::hostname(), screen: inj.screen() };
+    writer.write_all(&sealer.seal(&hello)?).await?;
 
     let mut st = State {
         active: false,
@@ -100,20 +120,20 @@ async fn session(cfg: &Config, shared: &Shared, inj: &mut dyn Injector) -> anyho
     let mut hb = tokio::time::interval(Duration::from_secs(1));
     let res = loop {
         tokio::select! {
-            msg = tokio::time::timeout(Duration::from_secs(4), protocol::read_msg(&mut reader)) => {
+            msg = tokio::time::timeout(Duration::from_secs(4), opener.read(&mut reader)) => {
                 let msg = match msg {
                     Ok(Ok(m)) => m,
                     Ok(Err(e)) => break Err(e),
                     Err(_) => break Err(anyhow::anyhow!("servidor sem heartbeat")),
                 };
                 if let Some(out) = handle(msg, &mut st, cfg, inj) {
-                    if let Err(e) = writer.write_all(&protocol::encode(&out)?).await {
+                    if let Err(e) = writer.write_all(&sealer.seal(&out)?).await {
                         break Err(e.into());
                     }
                 }
             }
             _ = hb.tick() => {
-                if let Err(e) = writer.write_all(&protocol::encode(&Msg::Heartbeat)?).await {
+                if let Err(e) = writer.write_all(&sealer.seal(&Msg::Heartbeat)?).await {
                     break Err(e.into());
                 }
             }

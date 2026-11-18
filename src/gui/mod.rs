@@ -61,7 +61,16 @@ impl App {
             ui.label("Porta:");
             ui.add(egui::DragValue::new(&mut self.cfg.port).range(1024..=65535));
             ui.end_row();
+            ui.label("PIN:");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.cfg.pin).desired_width(100.0));
+                if ui.button("Gerar novo").clicked() {
+                    self.cfg.pin = crate::secure::random_pin();
+                }
+            });
+            ui.end_row();
         });
+        ui.label("Use o mesmo PIN nos dois PCs.");
         ui.add_space(12.0);
         let label = if self.running() { "Parar" } else { "Iniciar" };
         if ui.button(label).clicked() {

@@ -42,6 +42,8 @@ pub struct Config {
     pub sensitivity: f32,
     /// Multiplicador de scroll aplicado no cliente.
     pub scroll_speed: f32,
+    /// PIN compartilhado (igual nos dois PCs).
+    pub pin: String,
     /// Resolução local (detectada ou manual).
     pub local_size: (u32, u32),
     /// Resolução remota (recebida no Hello; valor padrão até conectar).
@@ -58,6 +60,7 @@ impl Default for Config {
             remote_offset: 0.0,
             sensitivity: 1.0,
             scroll_speed: 1.0,
+            pin: crate::secure::random_pin(),
             local_size: (1920, 1080),
             remote_size: (1920, 1080),
         }

@@ -6,11 +6,15 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 bincode = "1"
+chacha20poly1305 = "0.11.0"
 dirs = "7.0.0"
 eframe = "0.37.0"
 env_logger = "0.11.11"
+getrandom = "0.4.3"
 log = "0.4.35"
 serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.11.1"
+spake2 = "0.4.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
 toml = "1.2.1"
 

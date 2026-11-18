@@ -1,9 +1,7 @@
 use crate::config::Side;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncReadExt};
 
-pub const PROTOCOL_VERSION: u32 = 1;
-const MAX_MSG: usize = 64 * 1024;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Button {
@@ -31,54 +29,4 @@ pub enum Msg {
     /// Solta tudo e para de injetar (atalho de emergência / perda de foco).
     ReleaseAll,
     Heartbeat,
-}
-
-/// Frame: u32 big-endian com tamanho + payload bincode.
-pub fn encode(msg: &Msg) -> anyhow::Result<Vec<u8>> {
-    let payload = bincode::serialize(msg)?;
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(&payload);
-    Ok(out)
-}
-
-pub async fn read_msg<R: AsyncRead + Unpin>(r: &mut R) -> anyhow::Result<Msg> {
-    let mut len = [0u8; 4];
-    r.read_exact(&mut len).await?;
-    let len = u32::from_be_bytes(len) as usize;
-    anyhow::ensure!(len <= MAX_MSG, "mensagem grande demais: {len} bytes");
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
-    Ok(bincode::deserialize(&buf)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn roundtrip() {
-        let msgs = vec![
-            Msg::Hello { version: PROTOCOL_VERSION, host: "pc".into(), screen: (1920, 1080) },
-            Msg::MouseMove { dx: -5.5, dy: 12.0 },
-            Msg::Key { hid: 0x04, down: true },
-            Msg::Enter { edge: Side::Bottom, pos: 0.5 },
-            Msg::ReleaseAll,
-        ];
-        let mut buf = Vec::new();
-        for m in &msgs {
-            buf.extend(encode(m).unwrap());
-        }
-        let mut r = buf.as_slice();
-        for m in &msgs {
-            assert_eq!(&read_msg(&mut r).await.unwrap(), m);
-        }
-    }
-
-    #[tokio::test]
-    async fn rejects_oversized() {
-        let mut buf = (MAX_MSG as u32 + 1).to_be_bytes().to_vec();
-        buf.extend(vec![0; 8]);
-        assert!(read_msg(&mut buf.as_slice()).await.is_err());
-    }
 }
