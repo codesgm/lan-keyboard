@@ -1,6 +1,7 @@
 mod layout;
 
 use crate::config::{Config, Role};
+use crate::worker::{Shared, Worker};
 use eframe::egui;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -13,20 +14,35 @@ enum Tab {
 pub struct App {
     cfg: Config,
     tab: Tab,
-    running: bool,
+    worker: Option<Worker>,
+    shared: Shared,
     status: String,
 }
 
 impl App {
-    pub fn new(cfg: Config) -> Self {
-        Self { cfg, tab: Tab::Connection, running: false, status: "Parado".into() }
+    pub fn new(cfg: Config, ctx: egui::Context) -> Self {
+        Self { cfg, tab: Tab::Connection, worker: None, shared: Shared::new(Some(ctx)), status: "Parado".into() }
+    }
+
+    fn running(&self) -> bool {
+        self.worker.as_ref().is_some_and(|w| !w.is_finished())
+    }
+
+    fn toggle(&mut self) {
+        if self.worker.take().is_some_and(|w| !w.is_finished()) {
+            return; // drop(Worker) para e espera a thread
+        }
+        self.save();
+        self.shared.update(|s| s.status = "Iniciando…".into());
+        self.worker = Some(Worker::start(self.cfg.clone(), self.shared.clone()));
     }
 
     fn save(&mut self) {
-        self.status = match self.cfg.save() {
+        let msg = match self.cfg.save() {
             Ok(()) => format!("Config salva em {}", Config::path().display()),
             Err(e) => format!("Erro ao salvar: {e}"),
         };
+        self.shared.update(|s| s.status = msg);
     }
 
     fn connection_tab(&mut self, ui: &mut egui::Ui) {
@@ -47,11 +63,12 @@ impl App {
             ui.end_row();
         });
         ui.add_space(12.0);
-        let label = if self.running { "Parar" } else { "Iniciar" };
+        let label = if self.running() { "Parar" } else { "Iniciar" };
         if ui.button(label).clicked() {
-            // Rede/input entram nas fases 2–4.
-            self.running = !self.running;
-            self.status = if self.running { "Rodando (sem rede ainda)".into() } else { "Parado".into() };
+            self.toggle();
+        }
+        if self.running() {
+            ui.label("Mudanças de config valem ao reiniciar.");
         }
     }
 
@@ -78,6 +95,16 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let (status, local, remote) = self.shared.read(|s| (s.status.clone(), s.local_size, s.remote_size));
+        if !status.is_empty() {
+            self.status = status;
+        }
+        if let Some(l) = local {
+            self.cfg.local_size = l;
+        }
+        if let Some(r) = remote {
+            self.cfg.remote_size = r;
+        }
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Connection, "Conexão");
@@ -95,6 +122,9 @@ impl eframe::App for App {
         });
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Connection => self.connection_tab(ui),
+            Tab::Layout if self.cfg.role == Role::Client => {
+                ui.label("Layout é configurado no servidor (PC com teclado/mouse).");
+            }
             Tab::Layout => layout::show(ui, &mut self.cfg),
             Tab::Settings => self.settings_tab(ui),
         });

@@ -54,7 +54,7 @@ impl Default for Config {
             role: Role::Server,
             server_addr: "192.168.0.10".into(),
             port: 24800,
-            remote_side: Side::Right,
+            remote_side: Side::Top,
             remote_offset: 0.0,
             sensitivity: 1.0,
             scroll_speed: 1.0,
